@@ -1,0 +1,232 @@
+package main.java.tddt;
+
+import javafx.scene.control.Label;
+import main.java.tddt.data.Log;
+import main.java.tddt.data.LogList;
+import main.java.tddt.data.Timer;
+import main.java.tddt.gui.Controller;
+import vk.core.api.*;
+import vk.core.api.CompilerResult;
+import vk.core.api.TestResult;
+import vk.core.api.CompileError;
+import vk.core.api.CompilerFactory;
+import vk.core.api.JavaStringCompiler;
+import vk.core.internal.*;
+import vk.core.internal.InternalResult;
+import java.util.TreeSet;
+
+import javax.xml.bind.JAXBException;
+import java.io.File;
+import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Collection;
+import java.util.List;
+
+public class Coordinator {
+
+    private String classname;
+    private String testname;
+    public int phase;
+    public Label zeitlabel;
+    private boolean babystepsactiv = false;
+    public LogList logs;
+    private File logfile;
+    Timer timer;
+    private double babystepstime;
+    Controller conti;
+
+    public Coordinator(String classname, String testname) {
+        this.classname = classname;
+        this.testname = testname;
+        phase = 1;
+    }
+
+    public Coordinator(String classname, String testname, int phase) {
+        this.classname = classname;
+        this.testname = testname;
+        this.phase = phase;
+    }
+
+    public Coordinator(String classname, String testname, int phase, File file,
+            Label lab, Controller conti) {
+        this.classname = classname;
+        this.testname = testname;
+        this.phase = phase;
+        this.logfile = file;
+        this.logs = new LogList(file);
+        this.zeitlabel = lab;
+        this.conti = conti;
+        this.babystepstime = 3;
+        timer = new Timer(lab, this);
+    }
+
+    public String compile(String classcontent, String testcontent) {
+        String result = "";
+        CompilationUnit testcompile = new CompilationUnit(testname, testcontent, true);
+        CompilationUnit classcompile = new CompilationUnit(classname, classcontent, false);
+        JavaStringCompiler compiler = CompilerFactory.getCompiler(classcompile, testcompile);
+        compiler.compileAndRunTests();
+        CompilerResult compresult = compiler.getCompilerResult();
+        TestResult testresult = compiler.getTestResult();
+        if (compresult.hasCompileErrors()) {
+            Collection<CompileError> errors = compresult.getCompilerErrorsForCompilationUnit(classcompile);
+            for (CompileError e : errors) {
+                result += e.toString() + "\n";
+            }
+            Collection<CompileError> testerrors = compresult.getCompilerErrorsForCompilationUnit(testcompile);
+            for (CompileError e : testerrors) {
+                result += e.toString() + "\n";
+            }
+        } else {
+            result += "Compiled successfully" + "\n";
+
+            if ((testresult.getNumberOfFailedTests() > 0)) {
+                Collection<TestFailure> failures = testresult.getTestFailures();
+                for (TestFailure f : failures) {
+                    result += f.getMessage() + "\n";
+                }
+            } else {
+                result += "All Tests successful. " + "Number of executed tests: " + Integer.toString(testresult.getNumberOfSuccessfulTests());
+            }
+        }
+        LocalDateTime time = LocalDateTime.now();
+
+        try {
+            logs.addLog(new Log(this.phase, time, null, classcontent, testcontent, result));
+        } catch (JAXBException j) {
+        }
+        return result;
+    }
+
+    public LocalDateTime nextPhase(String classcontent, String testcontent) {
+        CompilationUnit testcompile = new CompilationUnit(testname, testcontent, true);
+        CompilationUnit classcompile = new CompilationUnit(classname, classcontent, false);
+        JavaStringCompiler compiler = CompilerFactory.getCompiler(classcompile, testcompile);
+        compiler.compileAndRunTests();
+        CompilerResult compresult = compiler.getCompilerResult();
+        TestResult testresult = compiler.getTestResult();
+        int tempphase = this.phase;
+        if (phase == 1 && compresult.hasCompileErrors()) {
+            Collection<CompileError> errors = compresult.getCompilerErrorsForCompilationUnit(classcompile);
+            Collection<CompileError> testerrors = compresult.getCompilerErrorsForCompilationUnit(testcompile);
+            if (errors.size() == 0 && testerrors.size() == 1) {
+                String[] theerror;
+                String err = "";
+                for (CompileError e : testerrors) {
+                    err = e.toString();
+                }
+                theerror = err.split("\\s+");
+                int richtigererror = 0;
+                for (int i = 0; i < theerror.length; i++) {
+                    if (theerror[i].equals("symbol") | theerror[i].equals("find") | theerror[i].equals("symbol:") | theerror[i].equals("method")) {
+                        richtigererror++;
+                    }
+                }
+                if (richtigererror == 4) {
+                    phase = 2;
+                }
+
+            }
+        } else if (!compresult.hasCompileErrors()) {
+
+            if (phase == 1 && (testresult.getNumberOfFailedTests() > 0)) {
+                phase = 2;
+            } else if (phase == 2 && (testresult.getNumberOfFailedTests() == 0)) {
+                phase = 3;
+            } else if (phase == 3 && (testresult.getNumberOfFailedTests() == 0)) {
+                phase = 1;
+            }
+        }
+        LocalDateTime time = LocalDateTime.now();
+        if (this.phase != tempphase) {
+            LocalDateTime timers = timer.stop();
+            try {
+                logs.addLog(new Log(tempphase, time, timers, classcontent, testcontent, ""));
+                if (this.babystepsactiv && this.phase != 3) {
+                    timer = new Timer(this.zeitlabel, this, this.babystepstime);
+                } else {
+                    timer = new Timer(this.zeitlabel, this);
+                }
+                return timers;
+            } catch (JAXBException j) {
+            }
+        }
+        return null;
+    }
+
+    public Log lastLog() {
+        this.logs.deleteLast();
+        return this.logs.getLog(logs.size() - 1);
+    }
+
+    public void deleteLog() {
+        this.logs.deleteAll();
+    }
+
+    public Log lastPhase() {
+        int tempphase = this.phase;
+        if (logs.size() == 0) {
+            return null;
+        }
+        while (tempphase == logs.getLog(logs.size() - 1).getPhase()) {
+            this.logs.deleteLast();
+        }
+        this.phase = logs.getLog(logs.size() - 1).getPhase();
+        LocalDateTime temp = this.timer.stop();
+        if (this.babystepsactiv) {
+            timer = new Timer(this.zeitlabel, this, this.babystepstime);
+        } else {
+            timer = new Timer(this.zeitlabel, this);
+        }
+        return logs.getLog(logs.size() - 1);
+
+    }
+
+    public void Babystepsover() {
+        int tempphase = this.phase;
+        while (tempphase == logs.getLog(logs.size() - 1).getPhase()) {
+            this.logs.deleteLast();
+        }
+
+        LocalDateTime temp = this.timer.stop();
+        if (this.babystepsactiv) {
+            timer = new Timer(this.zeitlabel, this, this.babystepstime);
+        } else {
+            timer = new Timer(this.zeitlabel, this);
+        }
+        conti.timeoveratBabystepping(logs.getLog(logs.size() - 1));
+    }
+
+    public void setBabystepsActivated(boolean activ, double timing) {
+        this.babystepsactiv = activ;
+        this.babystepstime = timing;
+    }
+
+    public boolean getBabystepsActivated() {
+        return this.babystepsactiv;
+    }
+
+    public double getBabystepsTime() {
+        return babystepstime;
+    }
+
+    public ArrayList<LocalDateTime>[] getPhaseTimes() {
+        ArrayList<LocalDateTime> phase1 = new ArrayList<LocalDateTime>();
+        ArrayList<LocalDateTime> phase2 = new ArrayList<LocalDateTime>();
+        ArrayList<LocalDateTime> phase3 = new ArrayList<LocalDateTime>();
+        for (int i = 0; i < logs.size(); i++) {
+            if ((logs.getLog(i).getTimer() != null) && logs.getLog(i).getPhase() == 1) {
+                phase1.add(logs.getLog(i).getTimer());
+            } else if ((logs.getLog(i).getTimer() != null) && logs.getLog(i).getPhase() == 2) {
+                phase2.add(logs.getLog(i).getTimer());
+            } else if ((logs.getLog(i).getTimer() != null) && logs.getLog(i).getPhase() == 3) {
+                phase3.add(logs.getLog(i).getTimer());
+            }
+        }
+
+        ArrayList<LocalDateTime>[] timertimetimes = new ArrayList[]{phase1, phase2, phase3};
+        return timertimetimes;
+    }
+
+}
