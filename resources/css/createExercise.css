@@ -25,6 +25,12 @@
     -fx-text-fill: white;
 }
 
-.scroll-pane .viewport{
-    -fx-background-color: #555555;
+.text-area{
+    -fx-background-color: #bbbbbb;
+    -fx-font-weight: bold;
+    -fx-font-size: 10pt;
+}
+
+#alertlabel{
+    -fx-text-fill: #ff0000;
 }
